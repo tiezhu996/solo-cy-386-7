@@ -175,6 +175,10 @@ async function onAccept() {
     await exchangeApi.acceptExchangeProposal(proposal.value!.id)
     ElMessage.success('已接受，物品锁定成交')
     await load()
+  } catch (err) {
+    // 到期接受会在后端完成超时收口并返回失败：刷新以呈现 expired 状态与历史。
+    await load()
+    throw err
   } finally {
     acting.value = false
   }
@@ -191,6 +195,9 @@ async function onCounter() {
     counterDialog.value = false
     ElMessage.success('已还价，等待对方回应')
     await load()
+  } catch (err) {
+    await load()
+    throw err
   } finally {
     acting.value = false
   }
@@ -222,6 +229,9 @@ async function confirmNote() {
     }
     noteDialog.value = false
     await load()
+  } catch (err) {
+    await load()
+    throw err
   } finally {
     acting.value = false
   }

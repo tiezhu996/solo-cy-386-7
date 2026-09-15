@@ -200,11 +200,15 @@ func TestExchangeRepositoryExpireDue(t *testing.T) {
 
 	var n int64
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		var e error
-		n, e = repo.ExpireDueTx(tx, 100)
+		now := time.Now()
+		ids, e := repo.LockDueExpiredIDsTx(tx, now, 100)
+		if e != nil {
+			return e
+		}
+		n, e = repo.SettleExpiredTx(tx, ids, now)
 		return e
 	}); err != nil {
-		t.Fatalf("ExpireDueTx: %v", err)
+		t.Fatalf("expire settle: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("expected 1 expired proposal, got %d", n)
@@ -226,16 +230,26 @@ func TestExchangeRepositoryExpireDue(t *testing.T) {
 		t.Fatal("expected an expired system history entry")
 	}
 
-	// 再次扫描不应重复处理。
+	// 再次扫描不应重复处理、不应重复写历史。
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		var e error
-		n, e = repo.ExpireDueTx(tx, 100)
+		now := time.Now()
+		ids, e := repo.LockDueExpiredIDsTx(tx, now, 100)
+		if e != nil {
+			return e
+		}
+		n, e = repo.SettleExpiredTx(tx, ids, now)
 		return e
 	}); err != nil {
-		t.Fatalf("second ExpireDueTx: %v", err)
+		t.Fatalf("second expire settle: %v", err)
 	}
 	if n != 0 {
 		t.Fatalf("expected 0 expired on second sweep, got %d", n)
+	}
+	var histCount int64
+	db.Model(&model.ExchangeProposalHistory{}).
+		Where("proposal_id = ? AND action = ?", p.ID, constants.ExchangeActionExpired).Count(&histCount)
+	if histCount != 1 {
+		t.Fatalf("expected exactly 1 expire history after repeated sweep, got %d", histCount)
 	}
 }
 

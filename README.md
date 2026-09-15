@@ -208,7 +208,7 @@ curl -sS "http://localhost:19406/api/v1/exchange/proposals?role=recipient&status
 | POST | `/exchange/proposals/:id/cancel` | 发起人取消，释放物品 | `ExchangeService.terminate`（拒绝/取消复用） |
 
 > 列表接口与详情接口共用 `service.ToExchangeProposalVO`；拒绝与取消共用 `ExchangeService.terminate`；
-> 超时由后端每分钟扫描（`ExchangeService.ExpireDue`）并在每次动作时惰性复查，超时候动作返回 `10025`。
+> 到期收口只有一处实现 `repository.SettleExpiredTx`，后台每分钟扫描（`ExchangeService.ExpireDue`）与到点后的任何动作（接受/拒绝/还价/取消）惰性收口**共用该方法**：动作在独立事务中把提案 CAS 置为 `expired` 并写一条幂等系统历史后返回明确错误 `10025`，关联物品立即释放；重复清理不重复写历史，并发接受与清理因行锁 + CAS 只能成功一个。
 
 ## Docker 部署说明
 

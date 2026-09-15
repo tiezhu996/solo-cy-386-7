@@ -123,8 +123,8 @@ func (s *ExchangeService) Accept(userID, proposalID uint) (*model.ExchangePropos
 	var proposal *model.ExchangeProposal
 	var closedOthers int64
 	var lockedItems int
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		p, actorRole, err := s.loadActiveForAction(tx, userID, proposalID, constants.ExchangeActionAccepted)
+	err := s.runActionTx(proposalID, func(tx *gorm.DB, now time.Time) error {
+		p, actorRole, err := s.loadActiveForAction(tx, userID, proposalID, constants.ExchangeActionAccepted, now)
 		if err != nil {
 			return err
 		}
@@ -143,7 +143,6 @@ func (s *ExchangeService) Accept(userID, proposalID uint) (*model.ExchangePropos
 			}
 		}
 		// CAS：仅 pending/countered 可接受；并发下只有一个动作能把行改为 accepted。
-		now := time.Now()
 		ok, err := s.exchangeRepo.CompareAndUpdateStatusTx(tx, p.ID,
 			constants.ExchangeStatusTransitions[constants.ExchangeStatusAccepted],
 			map[string]interface{}{
@@ -209,12 +208,11 @@ func (s *ExchangeService) Cancel(userID, proposalID uint, note string) (*model.E
 // terminate 拒绝/取消共用同一套事务与 CAS（两个接口复用同一 service 私有方法）。
 func (s *ExchangeService) terminate(userID, proposalID uint, action, targetStatus, errPrefix, note string) (*model.ExchangeProposal, error) {
 	var proposal *model.ExchangeProposal
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		p, actorRole, err := s.loadActiveForAction(tx, userID, proposalID, action)
+	err := s.runActionTx(proposalID, func(tx *gorm.DB, now time.Time) error {
+		p, actorRole, err := s.loadActiveForAction(tx, userID, proposalID, action, now)
 		if err != nil {
 			return err
 		}
-		now := time.Now()
 		fields := map[string]interface{}{
 			"status":         targetStatus,
 			"last_action_by": userID,
@@ -261,8 +259,8 @@ func (s *ExchangeService) terminate(userID, proposalID uint, action, targetStatu
 // 仅可还价一次：countered 后不再允许还价，只能接受/拒绝/取消。
 func (s *ExchangeService) Counter(userID, proposalID uint, req dto.ExchangeCounterRequest) (*model.ExchangeProposal, error) {
 	var proposal *model.ExchangeProposal
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		p, actorRole, err := s.loadActiveForAction(tx, userID, proposalID, constants.ExchangeActionCountered)
+	err := s.runActionTx(proposalID, func(tx *gorm.DB, now time.Time) error {
+		p, actorRole, err := s.loadActiveForAction(tx, userID, proposalID, constants.ExchangeActionCountered, now)
 		if err != nil {
 			return err
 		}
@@ -354,16 +352,18 @@ func (s *ExchangeService) List(userID uint, q dto.ExchangeQuery) (*dto.ExchangeL
 	return &dto.ExchangeListResponse{List: list, Total: total, Page: page, Size: pageSize}, nil
 }
 
-// ExpireDue 超时扫描：原子结束已到期的生效提案并释放物品占用（由后台 ticker 周期调用）。
+// ExpireDue 后台超时清理：与动作惰性收口共用仓储方法 SettleExpiredTx，到期提案 CAS 置 expired 并补幂等历史。
+// 由后台 ticker 周期调用；重复执行不会重复写历史，并发接受与清理只能成功一个。
 func (s *ExchangeService) ExpireDue() (int64, error) {
 	var n int64
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		closed, err := s.exchangeRepo.ExpireDueTx(tx, 200)
+	err := s.runInTransaction(func(tx *gorm.DB) error {
+		now := time.Now()
+		ids, err := s.exchangeRepo.LockDueExpiredIDsTx(tx, now, 200)
 		if err != nil {
 			return err
 		}
-		n = closed
-		return nil
+		n, err = s.exchangeRepo.SettleExpiredTx(tx, ids, now)
+		return err
 	})
 	if err != nil {
 		return 0, fmt.Errorf("expire due exchange proposals: %w", err)
@@ -374,9 +374,77 @@ func (s *ExchangeService) ExpireDue() (int64, error) {
 	return n, nil
 }
 
-// loadActiveForAction 读取提案并校验：存在 → 参与方 → 未超时 → 动作权限（回合）→ 状态可流转。
-// 返回加锁读取的提案与操作者角色（offeror/offeree）。
-func (s *ExchangeService) loadActiveForAction(tx *gorm.DB, userID, proposalID uint, action string) (*model.ExchangeProposal, string, error) {
+// runInTransaction 手工事务：fn 返回任何错误都回滚并原样返回。
+// 用于动作场景：动作前置校验若发现提案到期会返回内部哨兵 errRollback，
+// 由 runActionTx 捕获后另起事务提交到期收口，再转成明确的“已超时”业务错误。
+// 不能使用 db.Transaction：它对任何返回 error（含正常的业务拒绝）都回滚，
+// 会把同一事务内已完成的到期收口一并撤销，导致状态停留、物品不释放。
+func (s *ExchangeService) runInTransaction(fn func(tx *gorm.DB) error) error {
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("begin transaction: %w", tx.Error)
+	}
+	if err := fn(tx); err != nil {
+		if rbErr := tx.Rollback().Error; rbErr != nil {
+			return fmt.Errorf("rollback: %v (orig: %w)", rbErr, err)
+		}
+		return err
+	}
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// runActionTx 动作统一事务封装：在手工事务内执行 fn；
+// 若 fn 因提案到期返回 errRollback，则回滚动作事务、另起事务提交到期收口（与后台清理共用 SettleExpiredTx），
+// 再返回明确的“已超时”业务错误。并发接受与清理因此只有一个成功。
+func (s *ExchangeService) runActionTx(proposalID uint, fn func(tx *gorm.DB, now time.Time) error) error {
+	now := time.Now()
+	err := s.runInTransaction(func(tx *gorm.DB) error {
+		return fn(tx, now)
+	})
+	if !errors.Is(err, errRollback) {
+		return err
+	}
+	// 动作事务已回滚；独立提交到期收口，保证状态转 expired、历史落库、物品立即释放。
+	settled, sErr := s.settleExpiredProposal(proposalID, now)
+	if sErr != nil {
+		return sErr
+	}
+	p, _ := s.exchangeRepo.GetByID(proposalID)
+	if settled || (p != nil && p.Status == constants.ExchangeStatusExpired) {
+		if p != nil {
+			s.logger.Info(constants.LogExchangeExpired,
+				"proposal_no", p.ProposalNo, "operator", 0, "released_items", len(p.Items),
+				"status", constants.ExchangeStatusExpired)
+		}
+		return exchangeExpiredError(p)
+	}
+	// 收口未命中且状态非 expired：动作事务与收口事务之间，提案已被并发接受/拒绝/取消提交。
+	return utilAppError(constants.CodeExchangeStateInvalid,
+		"换物提案操作失败：提案已被处理或状态已变更", nil)
+}
+
+// errRollback 内部哨兵：提案已到期但仍为生效态，动作必须中止并触发独立收口。
+var errRollback = errors.New("exchange proposal due for expiry, action must abort")
+
+// exchangeExpiredError 返回统一的“已超时”业务错误（动作必须明确失败）。
+func exchangeExpiredError(p *model.ExchangeProposal) error {
+	no := ""
+	if p != nil {
+		no = p.ProposalNo
+	}
+	return utilAppError(constants.CodeExchangeExpired,
+		"换物提案操作失败：提案 "+no+" 已超过回应期限，自动失效，物品已释放", nil)
+}
+
+// loadActiveForAction 在调用方已开启的 tx 内读取提案并做动作前置校验：
+// 存在 → 参与方 → 未超时 → 还价次数 → 状态可流转 → 回合/身份。
+// 若提案已到期但仍为生效态，返回 errRollback：调用方应回滚当前 tx，
+// 另起独立事务用 SettleExpiredTx 提交收口，再向调用方返回明确的“已超时”失败。
+// 这样可避免“收口写操作与业务错误在同一事务被 GORM 一并回滚”的缺陷。
+func (s *ExchangeService) loadActiveForAction(tx *gorm.DB, userID, proposalID uint, action string, now time.Time) (*model.ExchangeProposal, string, error) {
 	p, err := s.exchangeRepo.GetByIDForUpdate(tx, proposalID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
@@ -395,23 +463,9 @@ func (s *ExchangeService) loadActiveForAction(tx *gorm.DB, userID, proposalID ui
 		return nil, "", utilAppError(constants.CodeNotExchangeParty,
 			"换物提案操作失败：用户 id="+fmt.Sprint(userID)+" 不是提案 "+p.ProposalNo+" 的参与方", nil)
 	}
-	// 惰性超时：到达动作时若已过期，先原子置为 expired 再拒绝本次操作。
-	if constants.IsExchangeActive(p.Status) && time.Now().After(p.ExpiresAt) {
-		ok, casErr := s.exchangeRepo.CompareAndUpdateStatusTx(tx, p.ID, constants.ExchangeActiveStatuses,
-			map[string]interface{}{"status": constants.ExchangeStatusExpired, "last_action_by": 0})
-		if casErr != nil {
-			return nil, "", casErr
-		}
-		if ok {
-			if histErr := s.exchangeRepo.CreateHistoryWithTx(tx, &model.ExchangeProposalHistory{
-				ProposalID: p.ID, ActorID: 0, ActorRole: constants.ExchangePartySystem,
-				Action: constants.ExchangeActionExpired, Note: "提案超过回应期限未处理，已自动失效并释放物品",
-			}); histErr != nil {
-				return nil, "", histErr
-			}
-		}
-		return nil, "", utilAppError(constants.CodeExchangeExpired,
-			"换物提案操作失败：提案 "+p.ProposalNo+" 已超过回应期限，自动失效", nil)
+	// 已到期但仍是生效态：不在本事务收口（否则会随动作错误一起回滚），交由调用方独立提交。
+	if constants.IsExchangeActive(p.Status) && now.After(p.ExpiresAt) {
+		return p, actorRole, errRollback
 	}
 	// 还价次数校验优先于状态/回合校验：countered 后再次还价明确提示“仅可还价一次”。
 	if action == constants.ExchangeActionCountered && p.Round >= 1 {
@@ -419,10 +473,9 @@ func (s *ExchangeService) loadActiveForAction(tx *gorm.DB, userID, proposalID ui
 			"还价失败：提案 "+p.ProposalNo+" 已还价过一次，无法再次还价", nil)
 	}
 	if !canExchangeTransition(p.Status, targetStatusByAction(action)) {
-		// 已超时终态单独给出明确错误，其余为状态冲突。
+		// 已是 expired 终态（后台已清理）单独给出明确错误，其余为状态冲突。
 		if p.Status == constants.ExchangeStatusExpired {
-			return nil, "", utilAppError(constants.CodeExchangeExpired,
-				"换物提案操作失败：提案 "+p.ProposalNo+" 已超过回应期限，自动失效", nil)
+			return nil, "", exchangeExpiredError(p)
 		}
 		return nil, "", utilAppError(constants.CodeExchangeStateInvalid,
 			fmt.Sprintf("换物提案操作失败：提案 %s 当前状态 %s 不允许执行该动作", p.ProposalNo, p.Status), nil)
@@ -444,6 +497,35 @@ func (s *ExchangeService) loadActiveForAction(tx *gorm.DB, userID, proposalID ui
 		}
 	}
 	return p, actorRole, nil
+}
+
+// settleExpiredProposal 单个提案的到期收口（动作惰性路径）：
+// 另起事务，行锁该提案后仅在仍生效且到期时 CAS 置 expired 并补幂等历史。
+// 返回 settled=true 表示本调用完成了收口；false 表示提案已被并发接受/拒绝/取消（收口未命中）。
+// 与后台 ExpireDue 共用同一仓储方法 SettleExpiredTx，保证收口逻辑一致。
+func (s *ExchangeService) settleExpiredProposal(proposalID uint, now time.Time) (bool, error) {
+	settled := false
+	err := s.runInTransaction(func(tx *gorm.DB) error {
+		// 先锁提案行，缩小候选；真正收口仍由 SettleExpiredTx 的条件 UPDATE 决定。
+		p, err := s.exchangeRepo.GetByIDForUpdate(tx, proposalID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return utilAppError(constants.CodeExchangeNotFound,
+					"换物提案操作失败：提案 id="+fmt.Sprint(proposalID)+" 不存在", err)
+			}
+			return fmt.Errorf("lock exchange proposal %d for expiry: %w", proposalID, err)
+		}
+		if !constants.IsExchangeActive(p.Status) || !now.After(p.ExpiresAt) {
+			return nil // 已被并发接受/拒绝/取消/清理：无需收口。
+		}
+		n, err := s.exchangeRepo.SettleExpiredTx(tx, []uint{proposalID}, now)
+		if err != nil {
+			return err
+		}
+		settled = n > 0
+		return nil
+	})
+	return settled, err
 }
 
 // validateCreateItems 校验发起提案的物品归属、在售、去重，并返回接收人 id（对方物品的所有者）。

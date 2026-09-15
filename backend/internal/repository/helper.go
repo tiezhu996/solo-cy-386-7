@@ -6,3 +6,9 @@ import "gorm.io/gorm/clause"
 func clauseLocking() clause.Locking {
 	return clause.Locking{Strength: "UPDATE"}
 }
+
+// clauseLockingSkipLocked 返回 SELECT ... FOR UPDATE SKIP LOCKED 子句（超时扫描多实例并发互不阻塞）。
+// SQLite 方言会忽略该子句，PostgreSQL 下生效。
+func clauseLockingSkipLocked() clause.Locking {
+	return clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}
+}

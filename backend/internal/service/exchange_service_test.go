@@ -319,3 +319,158 @@ func TestExchangePermissionAndDetail(t *testing.T) {
 		t.Fatalf("party user should read the proposal: %v", err)
 	}
 }
+
+// createExpiredProposal 创建一个生效提案并把到期时间回溯到过去（不经过后台清理）。
+func createExpiredProposal(t *testing.T, fx *exchangeFixture) *model.ExchangeProposal {
+	t.Helper()
+	p, err := fx.svc.Create(fx.alice.ID, dto.ExchangeCreateRequest{
+		OfferProductIDs: []uint{fx.aliceP1.ID}, TargetProductIDs: []uint{fx.bobP3.ID}, Note: "到期测试",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := fx.db.Model(&model.ExchangeProposal{}).Where("id = ?", p.ID).
+		Update("expires_at", time.Now().Add(-time.Hour)).Error; err != nil {
+		t.Fatalf("backdate expires_at: %v", err)
+	}
+	return p
+}
+
+func assertExpiredSettled(t *testing.T, fx *exchangeFixture, proposalID uint) {
+	t.Helper()
+	var after model.ExchangeProposal
+	if err := fx.db.First(&after, proposalID).Error; err != nil {
+		t.Fatalf("reload proposal: %v", err)
+	}
+	if after.Status != constants.ExchangeStatusExpired {
+		t.Fatalf("expected proposal expired, got %s", after.Status)
+	}
+	var hist int64
+	fx.db.Model(&model.ExchangeProposalHistory{}).
+		Where("proposal_id = ? AND action = ?", proposalID, constants.ExchangeActionExpired).Count(&hist)
+	if hist != 1 {
+		t.Fatalf("expected exactly 1 expire history, got %d", hist)
+	}
+	// 物品立即释放：保持在售，且可据此重新发起提案。
+	for _, pid := range []uint{fx.aliceP1.ID, fx.bobP3.ID} {
+		prod, _ := fx.productRepo.GetByID(pid)
+		if prod.Status != constants.ProductStatusOnSale {
+			t.Fatalf("product %d should be released to on_sale, got %s", pid, prod.Status)
+		}
+	}
+}
+
+// TestExchangeActionsExpireDirectly 到点后任何动作都必须：明确失败(10025)、提案转 expired、写一条历史、释放物品。
+// 覆盖此前“到期接受返回 500 且状态停留 pending”的缺陷，且不依赖后台清理先执行。
+func TestExchangeActionsExpireDirectly(t *testing.T) {
+	cases := []struct {
+		name   string
+		actor  func(fx *exchangeFixture) uint
+		action func(fx *exchangeFixture, id uint) error
+	}{
+		{
+			name:  "到期后接受",
+			actor: func(fx *exchangeFixture) uint { return fx.bob.ID },
+			action: func(fx *exchangeFixture, id uint) error {
+				_, e := fx.svc.Accept(fx.bob.ID, id)
+				return e
+			},
+		},
+		{
+			name:  "到期后拒绝",
+			actor: func(fx *exchangeFixture) uint { return fx.bob.ID },
+			action: func(fx *exchangeFixture, id uint) error {
+				_, e := fx.svc.Reject(fx.bob.ID, id, "不想换")
+				return e
+			},
+		},
+		{
+			name:  "到期后取消",
+			actor: func(fx *exchangeFixture) uint { return fx.alice.ID },
+			action: func(fx *exchangeFixture, id uint) error {
+				_, e := fx.svc.Cancel(fx.alice.ID, id, "不换了")
+				return e
+			},
+		},
+		{
+			name:  "到期后还价",
+			actor: func(fx *exchangeFixture) uint { return fx.bob.ID },
+			action: func(fx *exchangeFixture, id uint) error {
+				_, e := fx.svc.Counter(fx.bob.ID, id, dto.ExchangeCounterRequest{TopUpAmount: 10})
+				return e
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := setupExchangeFixture(t)
+			p := createExpiredProposal(t, fx)
+			err := tc.action(fx, p.ID)
+			assertAppErrorCode(t, err, constants.CodeExchangeExpired)
+			assertExpiredSettled(t, fx, p.ID)
+
+			// 物品已释放：可立即重新发起（同一批物品）。
+			if _, e := fx.svc.Create(fx.carol.ID, dto.ExchangeCreateRequest{
+				OfferProductIDs: []uint{fx.carolP5.ID}, TargetProductIDs: []uint{fx.bobP3.ID},
+			}); e != nil {
+				t.Fatalf("re-create on released items should succeed: %v", e)
+			}
+			// 收口历史可被参与方完整回读。
+			detail, e := fx.svc.GetDetail(tc.actor(fx), p.ID)
+			if e != nil {
+				t.Fatalf("party should read expired proposal: %v", e)
+			}
+			if detail.Status != constants.ExchangeStatusExpired || len(detail.History) != 2 {
+				t.Fatalf("expected expired status with created+expired histories, got status=%s history=%d", detail.Status, len(detail.History))
+			}
+		})
+	}
+}
+
+// TestExchangeExpireSettlementShared 后台清理与动作收口共用同一逻辑、互不重复写历史、并发只一个成功。
+func TestExchangeExpireSettlementShared(t *testing.T) {
+	t.Run("动作先收口后后台清理不重复写历史", func(t *testing.T) {
+		fx := setupExchangeFixture(t)
+		p := createExpiredProposal(t, fx)
+		_, err := fx.svc.Accept(fx.bob.ID, p.ID)
+		assertAppErrorCode(t, err, constants.CodeExchangeExpired)
+		assertExpiredSettled(t, fx, p.ID)
+
+		// 后台清理再跑：无新增收口、无重复历史。
+		n, err := fx.svc.ExpireDue()
+		if err != nil {
+			t.Fatalf("expire sweep: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("expected sweep to close 0 already-settled proposals, got %d", n)
+		}
+		assertExpiredSettled(t, fx, p.ID)
+
+		// 再次动作仍是明确失败。
+		_, err = fx.svc.Cancel(fx.alice.ID, p.ID, "")
+		assertAppErrorCode(t, err, constants.CodeExchangeExpired)
+	})
+
+	t.Run("后台先清理后动作明确失败", func(t *testing.T) {
+		fx := setupExchangeFixture(t)
+		p := createExpiredProposal(t, fx)
+		n, err := fx.svc.ExpireDue()
+		if err != nil || n != 1 {
+			t.Fatalf("sweep n=%d err=%v", n, err)
+		}
+		_, err = fx.svc.Accept(fx.bob.ID, p.ID)
+		assertAppErrorCode(t, err, constants.CodeExchangeExpired)
+		assertExpiredSettled(t, fx, p.ID)
+	})
+
+	t.Run("后台重复清理幂等", func(t *testing.T) {
+		fx := setupExchangeFixture(t)
+		p := createExpiredProposal(t, fx)
+		for i := 0; i < 3; i++ {
+			if _, err := fx.svc.ExpireDue(); err != nil {
+				t.Fatalf("sweep %d: %v", i, err)
+			}
+		}
+		assertExpiredSettled(t, fx, p.ID)
+	})
+}

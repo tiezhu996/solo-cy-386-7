@@ -26,8 +26,12 @@ type ExchangeRepository interface {
 	CountActiveByProductIDsTx(tx *gorm.DB, productIDs []uint, excludeProposalID uint) (map[uint]int64, error)
 	// AutoCloseOthersByProductIDsTx 将涉及任一给定物品的其他生效提案置为 status 并补系统历史（接受时原子结束其他提案）。
 	AutoCloseOthersByProductIDsTx(tx *gorm.DB, productIDs []uint, winnerProposalID uint, status string) (int64, error)
-	// ExpireDueTx 原子结束所有已到期生效提案（SKIP LOCKED 防并发重复处理），补系统历史，返回处理数量。
-	ExpireDueTx(tx *gorm.DB, limit int) (int64, error)
+	// LockDueExpiredIDsTx 行锁选出已到期但仍生效的提案 id（SKIP LOCKED 多实例并发不互斥处理同一批）。
+	LockDueExpiredIDsTx(tx *gorm.DB, now time.Time, limit int) ([]uint, error)
+	// SettleExpiredTx 到期收口的唯一实现：在给定 tx 内把候选提案 CAS 置为 expired，
+	// 并以 NOT EXISTS 幂等补一条系统超时历史，返回真正收口的行数。
+	// 后台批量清理与动作惰性收口都必须调用本方法，保证两处收口逻辑一致、重复清理不重复写历史。
+	SettleExpiredTx(tx *gorm.DB, candidateIDs []uint, now time.Time) (int64, error)
 }
 
 type exchangeRepo struct {
@@ -226,33 +230,42 @@ func (r *exchangeRepo) AutoCloseOthersByProductIDsTx(tx *gorm.DB, productIDs []u
 	return int64(len(ids)), nil
 }
 
-func (r *exchangeRepo) ExpireDueTx(tx *gorm.DB, limit int) (int64, error) {
-	now := time.Now()
-	// 候选到期提案（不加锁；真正的串行化由下面的条件 UPDATE 行锁保证）。
-	var ids []uint
-	if err := tx.Model(&model.ExchangeProposal{}).
+// LockDueExpiredIDsTx 在事务内行锁选出“已到期但仍生效”的提案 id。
+// 使用 FOR UPDATE SKIP LOCKED：多实例后台扫描并发执行时互不阻塞、不抢同一批；
+// 真正的是否收口由 SettleExpiredTx 的条件 UPDATE 决定（可与并发接受互斥）。
+func (r *exchangeRepo) LockDueExpiredIDsTx(tx *gorm.DB, now time.Time, limit int) ([]uint, error) {
+	ids := make([]uint, 0)
+	if err := tx.Clauses(clauseLockingSkipLocked()).
+		Model(&model.ExchangeProposal{}).
 		Where("status IN ?", constants.ExchangeActiveStatuses).
 		Where("expires_at < ?", now).
 		Order("expires_at ASC").Limit(limit).
 		Pluck("id", &ids).Error; err != nil {
-		return 0, fmt.Errorf("list due exchange proposals: %w", err)
+		return nil, fmt.Errorf("lock due exchange proposals: %w", err)
 	}
-	if len(ids) == 0 {
+	return ids, nil
+}
+
+// SettleExpiredTx 到期收口的唯一实现（后台批量清理与动作惰性收口共用）。
+// 一个 tx 内：条件 UPDATE（CAS：仅生效候选 → expired）+ NOT EXISTS 幂等补系统历史，同成功同回滚。
+// 返回真正收口的行数；并发接受/清理下只有一个事务能命中 CAS，重复清理不会重复写历史。
+func (r *exchangeRepo) SettleExpiredTx(tx *gorm.DB, candidateIDs []uint, now time.Time) (int64, error) {
+	if len(candidateIDs) == 0 {
 		return 0, nil
 	}
-	// 原子条件更新：仅生效中的候选会被置为 expired；并发接受/取消已提交的行不会被命中。
+	// 原子条件更新：并发下已被接受/拒绝/取消的行不会被命中。
 	res := tx.Model(&model.ExchangeProposal{}).
-		Where("id IN ?", ids).
+		Where("id IN ?", candidateIDs).
 		Where("status IN ?", constants.ExchangeActiveStatuses).
 		Where("expires_at < ?", now).
-		Update("status", constants.ExchangeStatusExpired)
+		Updates(map[string]interface{}{"status": constants.ExchangeStatusExpired, "last_action_by": 0})
 	if res.Error != nil {
-		return 0, fmt.Errorf("expire due exchange proposals: %w", res.Error)
+		return 0, fmt.Errorf("settle expired exchange proposals: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
 		return 0, nil
 	}
-	// 仅为本事务刚失效且尚无 expired 历史的提案补系统历史（NOT EXISTS 防多实例重复补写）。
+	// 仅给本 tx 已 expired 且尚无 expired 历史的提案补一条系统历史（NOT EXISTS 防重复补写）。
 	insertSQL := `
 		INSERT INTO exchange_proposal_histories
 			(proposal_id, actor_id, actor_role, action, note, top_up_amount, top_up_payer, created_at)
@@ -269,7 +282,7 @@ func (r *exchangeRepo) ExpireDueTx(tx *gorm.DB, limit int) (int64, error) {
 		constants.ExchangeActionExpired,
 		"提案超过回应期限未处理，已自动失效并释放物品",
 		now,
-		ids,
+		candidateIDs,
 		constants.ExchangeStatusExpired,
 		constants.ExchangeActionExpired,
 	)
