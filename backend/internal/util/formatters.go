@@ -115,3 +115,69 @@ func FormatRoleText(role string) string {
 func FormatPrice(price float64) string {
 	return fmt.Sprintf("%.2f", price)
 }
+
+// FormatExchangeStatusText 换物提案状态 → 中文文案（与前端 constants/index.ts 状态徽标同步）。
+func FormatExchangeStatusText(status string) string {
+	switch status {
+	case "pending":
+		return "待回应"
+	case "countered":
+		return "已还价"
+	case "accepted":
+		return "已接受"
+	case "rejected":
+		return "已拒绝"
+	case "cancelled":
+		return "已取消"
+	case "expired":
+		return "已超时"
+	default:
+		return "未知"
+	}
+}
+
+// FormatExchangeSideText 提案物品方 → 中文文案。
+func FormatExchangeSideText(side string) string {
+	switch side {
+	case "offer":
+		return "换出物品"
+	case "target":
+		return "换入物品"
+	default:
+		return "未知"
+	}
+}
+
+// FormatExchangeActionText 提案历史操作 → 中文文案（前端时间线复用同一套措辞）。
+func FormatExchangeActionText(action string) string {
+	switch action {
+	case "created":
+		return "发起提案"
+	case "countered":
+		return "还价"
+	case "accepted":
+		return "接受提案"
+	case "rejected":
+		return "拒绝提案"
+	case "cancelled":
+		return "取消提案"
+	case "expired":
+		return "超时失效"
+	default:
+		return action
+	}
+}
+
+// FormatExchangePartyText 参与方/差价支付方 → 中文文案。
+func FormatExchangePartyText(party string) string {
+	switch party {
+	case "offeror":
+		return "发起人"
+	case "offeree":
+		return "接收人"
+	case "system":
+		return "系统"
+	default:
+		return "未知"
+	}
+}

@@ -44,6 +44,15 @@ func (f *fakeProductRepo) ListBySeller(sellerID uint, page, pageSize int) ([]mod
 	return nil, 0, nil
 }
 func (f *fakeProductRepo) ListByIDs(ids []uint) ([]model.Product, error) { return nil, nil }
+func (f *fakeProductRepo) ListByIDsForUpdate(tx *gorm.DB, ids []uint) ([]model.Product, error) {
+	out := make([]model.Product, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := f.products[id]; ok {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
 func (f *fakeProductRepo) Update(p *model.Product) error {
 	if _, ok := f.products[p.ID]; !ok {
 		return repository.ErrNotFound
@@ -85,7 +94,9 @@ func (f *fakeFavoriteRepo) ListByUser(userID uint, page, pageSize int) ([]model.
 	return nil, 0, nil
 }
 
-func key(a, b uint) string { return strconv.FormatUint(uint64(a), 10) + "-" + strconv.FormatUint(uint64(b), 10) }
+func key(a, b uint) string {
+	return strconv.FormatUint(uint64(a), 10) + "-" + strconv.FormatUint(uint64(b), 10)
+}
 
 func newTestProductService() (*ProductService, *fakeProductRepo, *fakeFavoriteRepo) {
 	pr := newFakeProductRepo()

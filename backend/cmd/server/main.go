@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -48,6 +49,7 @@ func main() {
 	messageRepo := repository.NewMessageRepository(db)
 	reviewRepo := repository.NewReviewRepository(db)
 	auditRepo := repository.NewAuditRepository(db)
+	exchangeRepo := repository.NewExchangeRepository(db)
 
 	// 服务层装配（构造器注入）。
 	userService := service.NewUserService(userRepo, logger, cfg.JWTSecret, cfg.JWTExpireDuration())
@@ -59,6 +61,7 @@ func main() {
 	messageService := service.NewMessageService(messageRepo, hub, logger)
 	reviewService := service.NewReviewService(db, reviewRepo, orderRepo, userService, logger)
 	auditService := service.NewAuditService(auditRepo, logger)
+	exchangeService := service.NewExchangeService(db, exchangeRepo, productRepo, logger)
 
 	// 处理器装配。
 	userHandler := handler.NewUserHandler(userService)
@@ -71,6 +74,7 @@ func main() {
 	auditHandler := handler.NewAuditHandler(auditService)
 	wsHandler := handler.NewWSHandler(hub, logger)
 	uploadHandler := handler.NewUploadHandler(cfg.UploadDir, cfg.PublicURL)
+	exchangeHandler := handler.NewExchangeHandler(exchangeService)
 
 	if cfg.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -78,7 +82,11 @@ func main() {
 	engine := gin.New()
 	router.Register(engine, cfg, logger,
 		userHandler, productHandler, addressHandler, cartHandler, orderHandler,
-		messageHandler, reviewHandler, auditHandler, wsHandler, uploadHandler, auditService)
+		messageHandler, reviewHandler, auditHandler, wsHandler, uploadHandler, exchangeHandler, auditService)
+
+	// 换物提案超时扫描：每分钟将到期未处理的生效提案置为 expired 并释放物品。
+	exchangeSweepCtx, exchangeSweepCancel := context.WithCancel(context.Background())
+	go runExchangeSweeper(exchangeSweepCtx, exchangeService, logger)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -99,9 +107,31 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	logger.Info("shutting down server...")
+	exchangeSweepCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Error(constants.LogServerShutdown, "err", err)
+	}
+}
+
+// runExchangeSweeper 周期执行换物提案超时失效。
+func runExchangeSweeper(ctx context.Context, svc *service.ExchangeService, logger *slog.Logger) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := svc.ExpireDue()
+			if err != nil {
+				logger.Error("exchange proposal expire sweep failed", "err", err)
+				continue
+			}
+			if n > 0 {
+				logger.Info("exchange proposals expired by sweeper", "count", n)
+			}
+		}
 	}
 }

@@ -26,32 +26,49 @@ const (
 	CodeFileTooLarge       = 10015 // 文件过大
 	CodeUnsupportedMedia   = 10016 // 不支持的图片格式
 	CodeRedisUnavailable   = 10017 // 消息通道不可用
+	// 换物提案模块错误码 10018~10025。
+	CodeExchangeNotFound       = 10018 // 换物提案不存在
+	CodeExchangeStateInvalid   = 10019 // 提案状态非法流转
+	CodeNotExchangeParty       = 10020 // 非提案参与方
+	CodeExchangeItemConflict   = 10021 // 提案物品已被占用或非在售
+	CodeExchangeRoundExhausted = 10022 // 还价次数已用完（仅可还价一次）
+	CodeExchangeTurnInvalid    = 10023 // 当前用户没有该提案的动作权
+	CodeExchangeInvalidItems   = 10024 // 提案物品为空或归属不合法
+	CodeExchangeExpired        = 10025 // 提案已超时失效
 )
 
 // ErrorCodeMessages 错误码对应的默认提示文案（constants/messages.go 中另有接口文案）。
 var ErrorCodeMessages = map[int]string{
-	CodeOK:                 "ok",
-	CodeBadRequest:         "请求参数错误",
-	CodeUnauthorized:       "请先登录",
-	CodeForbidden:          "无权执行该操作",
-	CodeNotFound:           "资源不存在",
-	CodeConflict:           "资源状态冲突",
-	CodeInternalError:      "服务器内部错误",
-	CodeUserExists:         "该用户名已被注册",
-	CodeUserNotFound:       "用户不存在",
-	CodeInvalidCredentials: "用户名或密码错误",
-	CodeProductNotFound:    "商品不存在",
-	CodeProductSold:        "商品已售出，无法下单",
-	CodeOrderStateInvalid:  "订单状态不允许该操作",
-	CodeOrderNotFound:      "订单不存在",
-	CodeNotOrderOwner:      "只有订单归属人才可执行该操作",
-	CodeCannotSelfReview:   "不能对自己发布的内容进行评价",
-	CodeReviewExists:       "该订单已完成评价",
-	CodeAddressNotFound:    "收货地址不存在",
-	CodeCartItemNotFound:   "购物车条目不存在",
-	CodeMessageNotFound:    "消息不存在",
-	CodeProductOffShelf:    "商品已下架，无法购买",
-	CodeFileTooLarge:       "上传图片不能超过 5MB",
-	CodeUnsupportedMedia:   "仅支持 jpg/jpeg/png/webp 图片",
-	CodeRedisUnavailable:   "实时消息通道暂不可用",
+	CodeOK:                     "ok",
+	CodeBadRequest:             "请求参数错误",
+	CodeUnauthorized:           "请先登录",
+	CodeForbidden:              "无权执行该操作",
+	CodeNotFound:               "资源不存在",
+	CodeConflict:               "资源状态冲突",
+	CodeInternalError:          "服务器内部错误",
+	CodeUserExists:             "该用户名已被注册",
+	CodeUserNotFound:           "用户不存在",
+	CodeInvalidCredentials:     "用户名或密码错误",
+	CodeProductNotFound:        "商品不存在",
+	CodeProductSold:            "商品已售出，无法下单",
+	CodeOrderStateInvalid:      "订单状态不允许该操作",
+	CodeOrderNotFound:          "订单不存在",
+	CodeNotOrderOwner:          "只有订单归属人才可执行该操作",
+	CodeCannotSelfReview:       "不能对自己发布的内容进行评价",
+	CodeReviewExists:           "该订单已完成评价",
+	CodeAddressNotFound:        "收货地址不存在",
+	CodeCartItemNotFound:       "购物车条目不存在",
+	CodeMessageNotFound:        "消息不存在",
+	CodeProductOffShelf:        "商品已下架，无法购买",
+	CodeFileTooLarge:           "上传图片不能超过 5MB",
+	CodeUnsupportedMedia:       "仅支持 jpg/jpeg/png/webp 图片",
+	CodeRedisUnavailable:       "实时消息通道暂不可用",
+	CodeExchangeNotFound:       "换物提案不存在",
+	CodeExchangeStateInvalid:   "换物提案当前状态不允许该操作",
+	CodeNotExchangeParty:       "只有换物提案参与双方才可执行该操作",
+	CodeExchangeItemConflict:   "提案涉及的物品已被其他生效提案占用或已非在售",
+	CodeExchangeRoundExhausted: "换物提案仅可还价一次",
+	CodeExchangeTurnInvalid:    "当前不是您的回应回合",
+	CodeExchangeInvalidItems:   "换物提案物品为空或归属不合法",
+	CodeExchangeExpired:        "换物提案已超时失效",
 }

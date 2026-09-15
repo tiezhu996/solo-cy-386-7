@@ -91,3 +91,71 @@ export const ReviewRatingText: Record<string, string> = {
   [ReviewRating.NEUTRAL]: '中评',
   [ReviewRating.BAD]: '差评'
 }
+
+// 换物提案状态（与后端 internal/constants/enums.go 对应）。
+export const ExchangeStatus = {
+  PENDING: 'pending',
+  COUNTERED: 'countered',
+  ACCEPTED: 'accepted',
+  REJECTED: 'rejected',
+  CANCELLED: 'cancelled',
+  EXPIRED: 'expired'
+} as const
+
+export const ExchangeStatusText: Record<string, string> = {
+  [ExchangeStatus.PENDING]: '待回应',
+  [ExchangeStatus.COUNTERED]: '已还价',
+  [ExchangeStatus.ACCEPTED]: '已接受',
+  [ExchangeStatus.REJECTED]: '已拒绝',
+  [ExchangeStatus.CANCELLED]: '已取消',
+  [ExchangeStatus.EXPIRED]: '已超时'
+}
+
+export const ExchangeStatusTag: Record<string, string> = {
+  [ExchangeStatus.PENDING]: 'warning',
+  [ExchangeStatus.COUNTERED]: 'primary',
+  [ExchangeStatus.ACCEPTED]: 'success',
+  [ExchangeStatus.REJECTED]: 'info',
+  [ExchangeStatus.CANCELLED]: 'info',
+  [ExchangeStatus.EXPIRED]: 'danger'
+}
+
+export const ExchangeSide = {
+  OFFER: 'offer',
+  TARGET: 'target'
+} as const
+
+export const ExchangeSideText: Record<string, string> = {
+  [ExchangeSide.OFFER]: '换出物品',
+  [ExchangeSide.TARGET]: '换入物品'
+}
+
+export const ExchangeParty = {
+  OFFEROR: 'offeror',
+  OFFEREE: 'offeree',
+  SYSTEM: 'system'
+} as const
+
+export const ExchangePartyText: Record<string, string> = {
+  [ExchangeParty.OFFEROR]: '发起人',
+  [ExchangeParty.OFFEREE]: '接收人',
+  [ExchangeParty.SYSTEM]: '系统'
+}
+
+export const ExchangeAction = {
+  CREATED: 'created',
+  COUNTERED: 'countered',
+  ACCEPTED: 'accepted',
+  REJECTED: 'rejected',
+  CANCELLED: 'cancelled',
+  EXPIRED: 'expired'
+} as const
+
+export const ExchangeActionText: Record<string, string> = {
+  [ExchangeAction.CREATED]: '发起提案',
+  [ExchangeAction.COUNTERED]: '还价',
+  [ExchangeAction.ACCEPTED]: '接受提案',
+  [ExchangeAction.REJECTED]: '拒绝提案',
+  [ExchangeAction.CANCELLED]: '取消提案',
+  [ExchangeAction.EXPIRED]: '超时失效'
+}

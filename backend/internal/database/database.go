@@ -36,6 +36,9 @@ func Connect(cfg *config.Config, log *slog.Logger) (*gorm.DB, error) {
 		&model.Message{},
 		&model.Review{},
 		&model.AuditLog{},
+		&model.ExchangeProposal{},
+		&model.ExchangeProposalItem{},
+		&model.ExchangeProposalHistory{},
 	}
 	sqlDB, err := db.DB()
 	if err != nil {

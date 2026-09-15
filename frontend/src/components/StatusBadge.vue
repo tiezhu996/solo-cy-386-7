@@ -4,18 +4,27 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { OrderStatusText, OrderStatusTag, ProductStatusText, ReviewRatingText } from '../constants'
+import {
+  OrderStatusText,
+  OrderStatusTag,
+  ProductStatusText,
+  ReviewRatingText,
+  ExchangeStatusText,
+  ExchangeStatusTag
+} from '../constants'
 
-const props = defineProps<{ type: 'order' | 'product' | 'rating'; value: string }>()
+const props = defineProps<{ type: 'order' | 'product' | 'rating' | 'exchange'; value: string }>()
 
 const text = computed(() => {
   if (props.type === 'order') return OrderStatusText[props.value] ?? props.value
   if (props.type === 'product') return ProductStatusText[props.value] ?? props.value
+  if (props.type === 'exchange') return ExchangeStatusText[props.value] ?? props.value
   return ReviewRatingText[props.value] ?? props.value
 })
 
 const tagType = computed(() => {
   if (props.type === 'order') return (OrderStatusTag[props.value] ?? 'info') as any
+  if (props.type === 'exchange') return (ExchangeStatusTag[props.value] ?? 'info') as any
   if (props.type === 'product') return props.value === 'on_sale' ? 'success' : 'info'
   if (props.type === 'rating') {
     if (props.value === 'good') return 'success'

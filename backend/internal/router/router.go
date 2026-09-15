@@ -25,6 +25,7 @@ func Register(
 	auditHandler *handler.AuditHandler,
 	wsHandler *handler.WSHandler,
 	uploadHandler *handler.UploadHandler,
+	exchangeHandler *handler.ExchangeHandler,
 	auditService *service.AuditService,
 ) {
 	// 全局中间件：请求追踪、结构化日志、错误处理、限流、操作审计。
@@ -52,4 +53,6 @@ func Register(
 		RegisterReviewRoutes(api, reviewHandler, cfg.JWTSecret)
 		RegisterAuditRoutes(api, auditHandler, cfg.JWTSecret)
 		RegisterUploadRoutes(api, uploadHandler, cfg.JWTSecret)
-	}}
+		RegisterExchangeRoutes(api, exchangeHandler, cfg.JWTSecret)
+	}
+}

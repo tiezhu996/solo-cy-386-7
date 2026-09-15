@@ -27,6 +27,7 @@ docker compose up -d --build
 5. 用户私信：买卖双方站内文字沟通，WebSocket 实时推送
 6. 评价系统：交易完成后互评（好评/中评/差评），影响信用积分
 7. 个人中心：我的发布、我的收藏、我的订单、收货地址管理、信用积分展示
+8. **换物提案**：登录用户可用自己的一件或多件在售物品，向对方一件或多件在售物品发起交换提案，填写说明与补差价；对方可接受、拒绝或还价一次，双方可查看完整操作历史；接受时原子锁定双方物品并自动结束其他冲突提案，取消/拒绝/超时自动释放物品
 
 ## 技术栈
 
@@ -52,7 +53,7 @@ docker compose up -d --build
 │   ├── internal/
 │   │   ├── config/config.go
 │   │   ├── database/database.go  # PostgreSQL + Redis 连接
-│   │   ├── model/                # 每实体一个文件：user/product/order/message/review/address/cart_item/favorite/audit_log
+│   │   ├── model/                # 每实体一个文件：user/product/order/message/review/address/cart_item/favorite/audit_log/exchange_proposal
 │   │   ├── dto/                  # 每实体一个 DTO 文件 + vo.go 视图转换
 │   │   ├── repository/           # 每实体一个仓储文件
 │   │   ├── service/              # 每实体一个服务文件（含 ws_hub.go 实时推送）
@@ -66,10 +67,10 @@ docker compose up -d --build
 │   ├── Dockerfile
 │   ├── go.mod / go.sum
 ├── frontend/
-│   ├── src/api/                  # 每实体一个 API 文件
-│   ├── src/components/           # 共享组件（≥3）
-│   ├── src/pages/                # 每模块一个页面目录
-│   ├── src/stores/               # 按实体拆分 store
+│   ├── src/api/                  # 每实体一个 API 文件（含 exchangeProposal.ts）
+│   ├── src/components/           # 共享组件（StatusBadge/ExchangeItemCard/ExchangeHistoryTimeline 等）
+│   ├── src/pages/                # 每模块一个页面目录（含 pages/exchange/ 发起/列表/详情三页）
+│   ├── src/stores/               # 按实体拆分 store（含 exchangeStore.ts）
 │   ├── src/hooks/                # useAuth/usePagination
 │   ├── src/utils/                # request/format/ws
 │   ├── src/constants/            # 与后端对应枚举
@@ -169,6 +170,45 @@ ORDER_ID=$(curl -sS -X POST http://localhost:19406/api/v1/orders \
   -d '{"product_id":1,"address_id":1,"quantity":1}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["id"])')
 curl -sS -X POST http://localhost:19406/api/v1/orders/$ORDER_ID/pay -H "Authorization: Bearer $TOKEN"
 ```
+
+### 发起换物提案与状态流转
+
+```bash
+# 用自己的在售物品(2) 换对方一件或多件在售物品(8,9)，并补差价 100 元（由发起人支付）
+PID=$(curl -sS -X POST http://localhost:19406/api/v1/exchange/proposals \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"offer_product_ids":[2],"target_product_ids":[8,9],"note":"相机换平板+耳机","top_up_amount":100,"top_up_payer":"offeror","ttl_hours":72}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["id"])')
+
+# 对方还价（仅可还价一次）
+curl -sS -X POST http://localhost:19406/api/v1/exchange/proposals/$PID/counter \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"top_up_amount":50,"note":"差价少一点"}'
+
+# 接受（原子锁定双方物品并自动结束其他冲突提案）/ 拒绝 / 取消
+curl -sS -X POST http://localhost:19406/api/v1/exchange/proposals/$PID/accept -H "Authorization: Bearer $TOKEN"
+curl -sS -X POST http://localhost:19406/api/v1/exchange/proposals/$PID/reject -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"note":"暂不换"}'
+curl -sS -X POST http://localhost:19406/api/v1/exchange/proposals/$PID/cancel -H "Authorization: Bearer $TOKEN"
+
+# 查看提案详情（含双方物品快照与完整历史）与列表（role: initiator 我发起的 / recipient 我收到的）
+curl -sS http://localhost:19406/api/v1/exchange/proposals/$PID -H "Authorization: Bearer $TOKEN"
+curl -sS "http://localhost:19406/api/v1/exchange/proposals?role=recipient&status=pending" -H "Authorization: Bearer $TOKEN"
+```
+
+### 换物提案 API 清单（前缀 `/api/v1`，均需 JWT）
+
+| 方法 | 路径 | 说明 | 复用的 service 方法 |
+| --- | --- | --- | --- |
+| POST | `/exchange/proposals` | 发起提案（自己多件 ↔ 对方多件 + 说明 + 补差价 + 有效期） | `ExchangeService.Create` |
+| GET | `/exchange/proposals` | 提案列表（`role=initiator/recipient`、`status` 筛选、分页） | `ExchangeService.List` / `ToExchangeProposalVO` |
+| GET | `/exchange/proposals/:id` | 提案详情 + 双方物品快照 + 完整历史（仅参与方） | `ExchangeService.GetDetail` / `ToExchangeProposalVO` |
+| POST | `/exchange/proposals/:id/accept` | 接受：CAS 终态化、锁定物品、自动结束其他冲突提案 | `ExchangeService.Accept` |
+| POST | `/exchange/proposals/:id/reject` | 接收人拒绝，释放物品 | `ExchangeService.terminate`（拒绝/取消复用） |
+| POST | `/exchange/proposals/:id/counter` | 接收人还价一次（pending→countered，回合回到发起人） | `ExchangeService.Counter` |
+| POST | `/exchange/proposals/:id/cancel` | 发起人取消，释放物品 | `ExchangeService.terminate`（拒绝/取消复用） |
+
+> 列表接口与详情接口共用 `service.ToExchangeProposalVO`；拒绝与取消共用 `ExchangeService.terminate`；
+> 超时由后端每分钟扫描（`ExchangeService.ExpireDue`）并在每次动作时惰性复查，超时候动作返回 `10025`。
 
 ## Docker 部署说明
 
@@ -303,6 +343,40 @@ curl -sS -X POST http://localhost:19406/api/v1/orders/$ORDER_ID/pay -H "Authoriz
 - `frontend/src/components/StatusBadge.vue`
 - `frontend/src/pages/OrdersPage.vue`（评价弹窗）
 - `frontend/src/utils/format.ts`（formatRating）
+
+### 7. 换物提案状态 ExchangeStatus（pending/countered/accepted/rejected/cancelled/expired）
+
+后端出现位置：
+
+- `backend/internal/constants/enums.go`（定义 + `ExchangeStatusTransitions` 状态机 + `ExchangeActiveStatuses` + `ValidExchangeStatus`/`IsExchangeActive`；同文件另有 ExchangeSide/ExchangeParty/ExchangeAction 三组配套枚举）
+- `backend/internal/model/exchange_proposal.go`（Status/Turn/Round 字段，ExchangeProposalItem.Side、ExchangeProposalHistory.ActorRole/Action）
+- `backend/internal/dto/exchange_dto.go`（ExchangeQuery.Status 校验 oneof、Create/Counter 的 top_up_payer oneof、ExchangeProposalVO）
+- `backend/internal/repository/exchange_repository.go`（按生效状态统计占用、CAS 条件更新、自动结束他提案、超时扫描）
+- `backend/internal/repository/product_repository.go`（`ListByIDsForUpdate` 多物品行锁）
+- `backend/internal/service/exchange_service.go`（Create/Accept/Reject/Counter/Cancel/Expire 状态机 + `canExchangeTransition` + 回合与“仅还价一次”校验）
+- `backend/internal/handler/exchange_handler.go`（各动作接口与错误文案）
+- `backend/internal/router/exchange.go`（动作路由）
+- `backend/internal/constants/log_templates.go`（LogExchangeCreated/Accepted/Rejected/Countered/Cancelled/Expired/ItemsBusy）
+- `backend/internal/constants/error_codes.go`（CodeExchangeNotFound/StateInvalid/NotParty/ItemConflict/RoundExhausted/TurnInvalid/InvalidItems/Expired）
+- `backend/internal/constants/messages.go`（MsgExchange* 接口文案）
+- `backend/internal/util/formatters.go`（FormatExchangeStatusText/SideText/ActionText/PartyText）
+- `backend/internal/middleware/error_handler.go`（换物错误码 → HTTP 状态映射）
+
+前端出现位置：
+
+- `frontend/src/constants/index.ts`（ExchangeStatus/Text/Tag、ExchangeSide、ExchangeParty、ExchangeAction）
+- `frontend/src/components/StatusBadge.vue`（type="exchange" 状态徽标）
+- `frontend/src/components/ExchangeItemCard.vue`、`ExchangeHistoryTimeline.vue`（物品方/历史动作展示）
+- `frontend/src/pages/exchange/ExchangeListPage.vue`（状态 Tabs、轮到我回应）
+- `frontend/src/pages/exchange/ExchangeDetailPage.vue`（接受/拒绝/还价/取消按钮按状态与回合显隐）
+- `frontend/src/utils/format.ts`（formatExchangeStatus/Side/Action/Party）
+- `frontend/src/api/exchangeProposal.ts`、`frontend/src/api/types.ts`（接口与类型）
+- `frontend/src/stores/exchangeStore.ts`（动作封装与待回应计数）
+
+### 8. 换物物品方 ExchangeSide（offer/target）与动作 ExchangeAction（created/countered/accepted/rejected/cancelled/expired）
+
+后端：`constants/enums.go` → `model/exchange_proposal.go`（Item.Side、History.Action/ActorRole）→ `dto/exchange_dto.go` → `repository/exchange_repository.go` → `service/exchange_service.go`（targetStatusByAction、快照与历史落库）→ `util/formatters.go` → `constants/log_templates.go`。
+前端：`constants/index.ts` → `components/ExchangeItemCard.vue`、`components/ExchangeHistoryTimeline.vue` → `pages/exchange/*` → `utils/format.ts`。
 
 ## 横切关注点
 

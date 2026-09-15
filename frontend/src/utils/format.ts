@@ -68,3 +68,44 @@ export function formatRole(text: string): string {
   }
   return map[text] ?? text
 }
+
+export function formatExchangeStatus(text: string): string {
+  const map: Record<string, string> = {
+    pending: '待回应',
+    countered: '已还价',
+    accepted: '已接受',
+    rejected: '已拒绝',
+    cancelled: '已取消',
+    expired: '已超时'
+  }
+  return map[text] ?? text
+}
+
+export function formatExchangeSide(text: string): string {
+  const map: Record<string, string> = {
+    offer: '换出物品',
+    target: '换入物品'
+  }
+  return map[text] ?? text
+}
+
+export function formatExchangeAction(text: string): string {
+  const map: Record<string, string> = {
+    created: '发起提案',
+    countered: '还价',
+    accepted: '接受提案',
+    rejected: '拒绝提案',
+    cancelled: '取消提案',
+    expired: '超时失效'
+  }
+  return map[text] ?? text
+}
+
+export function formatExchangeParty(text: string): string {
+  const map: Record<string, string> = {
+    offeror: '发起人',
+    offeree: '接收人',
+    system: '系统'
+  }
+  return map[text] ?? text
+}

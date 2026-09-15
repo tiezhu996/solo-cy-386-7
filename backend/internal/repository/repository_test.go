@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -11,13 +12,16 @@ import (
 // newTestDB 创建内存 SQLite 数据库并迁移模型。
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	// 每个测试使用独立的内存库 DSN，避免用例间数据互相污染。
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	models := []interface{}{
 		&model.User{}, &model.Product{}, &model.Favorite{}, &model.Address{},
 		&model.CartItem{}, &model.Order{}, &model.Message{}, &model.Review{}, &model.AuditLog{},
+		&model.ExchangeProposal{}, &model.ExchangeProposalItem{}, &model.ExchangeProposalHistory{},
 	}
 	if err := db.AutoMigrate(models...); err != nil {
 		t.Fatalf("auto migrate: %v", err)

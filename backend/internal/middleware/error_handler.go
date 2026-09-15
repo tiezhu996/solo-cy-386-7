@@ -30,14 +30,15 @@ func ErrorHandler(logger *slog.Logger) gin.HandlerFunc {
 			switch appErr.Code {
 			case constants.CodeUnauthorized:
 				status = http.StatusUnauthorized
-			case constants.CodeForbidden:
+			case constants.CodeForbidden, constants.CodeNotExchangeParty:
 				status = http.StatusForbidden
 			case constants.CodeNotFound, constants.CodeUserNotFound, constants.CodeProductNotFound,
 				constants.CodeOrderNotFound, constants.CodeAddressNotFound, constants.CodeCartItemNotFound,
-				constants.CodeMessageNotFound:
+				constants.CodeMessageNotFound, constants.CodeExchangeNotFound:
 				status = http.StatusNotFound
 			case constants.CodeConflict, constants.CodeOrderStateInvalid, constants.CodeProductSold,
-				constants.CodeReviewExists:
+				constants.CodeReviewExists, constants.CodeExchangeStateInvalid, constants.CodeExchangeItemConflict,
+				constants.CodeExchangeRoundExhausted, constants.CodeExchangeTurnInvalid, constants.CodeExchangeExpired:
 				status = http.StatusConflict
 			case constants.CodeInternalError:
 				status = http.StatusInternalServerError

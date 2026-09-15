@@ -125,3 +125,51 @@ export interface AuditVO {
   request_id: string
   created_at: string
 }
+
+// 换物提案
+export interface ExchangeItemVO {
+  id: number
+  product_id: number
+  owner_id: number
+  side: 'offer' | 'target'
+  title: string
+  price: number
+  image: string
+  product?: ProductVO
+}
+
+export interface ExchangeHistoryVO {
+  id: number
+  actor_id: number
+  actor_role: 'offeror' | 'offeree' | 'system'
+  action: 'created' | 'countered' | 'accepted' | 'rejected' | 'cancelled' | 'expired'
+  note: string
+  top_up_amount: number
+  top_up_payer: 'offeror' | 'offeree'
+  created_at: string
+  actor?: UserVO
+}
+
+export interface ExchangeProposalVO {
+  id: number
+  proposal_no: string
+  offeror_id: number
+  offeree_id: number
+  status: 'pending' | 'countered' | 'accepted' | 'rejected' | 'cancelled' | 'expired'
+  turn: 'offeror' | 'offeree'
+  round: number
+  note: string
+  top_up_amount: number
+  top_up_payer: 'offeror' | 'offeree'
+  expires_at: string
+  accepted_at?: string
+  rejected_at?: string
+  cancelled_at?: string
+  created_at: string
+  updated_at: string
+  offeror?: UserVO
+  offeree?: UserVO
+  offer_items: ExchangeItemVO[]
+  target_items: ExchangeItemVO[]
+  history: ExchangeHistoryVO[]
+}

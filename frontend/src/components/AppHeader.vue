@@ -7,6 +7,10 @@
         <router-link to="/search">逛逛</router-link>
         <router-link v-if="userStore.isLoggedIn" to="/products/create">发布闲置</router-link>
         <router-link v-if="userStore.isLoggedIn" to="/orders">我的订单</router-link>
+        <router-link v-if="userStore.isLoggedIn" to="/exchange">
+          换物提案
+          <el-badge v-if="exchangeStore.pendingCount > 0" :value="exchangeStore.pendingCount" class="badge" />
+        </router-link>
         <router-link v-if="userStore.isLoggedIn" to="/messages">
           私信
           <el-badge v-if="messageStore.unread > 0" :value="messageStore.unread" class="badge" />
@@ -40,16 +44,19 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/userStore'
 import { useCartStore } from '../stores/cartStore'
 import { useMessageStore } from '../stores/messageStore'
+import { useExchangeStore } from '../stores/exchangeStore'
 
 const router = useRouter()
 const userStore = useUserStore()
 const cartStore = useCartStore()
 const messageStore = useMessageStore()
+const exchangeStore = useExchangeStore()
 
 onMounted(() => {
   if (userStore.isLoggedIn) {
     cartStore.load().catch(() => {})
     messageStore.loadUnread()
+    exchangeStore.loadPendingCount().catch(() => {})
   }
 })
 

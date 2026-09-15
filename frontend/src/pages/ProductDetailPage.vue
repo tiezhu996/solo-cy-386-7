@@ -33,6 +33,12 @@
           <div class="actions">
             <el-button type="danger" size="large" @click="addCart">加入购物车</el-button>
             <el-button type="primary" size="large" @click="buyNow">立即购买</el-button>
+            <el-button
+              v-if="canExchange"
+              type="success"
+              size="large"
+              @click="startExchange"
+            >我要换物</el-button>
             <el-button size="large" @click="toggleFavorite">
               {{ product.is_favorite ? '取消收藏' : '收藏' }}
             </el-button>
@@ -47,7 +53,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import * as productApi from '../api/product'
@@ -62,6 +68,14 @@ const userStore = useUserStore()
 const cartStore = useCartStore()
 const product = ref<any>(null)
 const loading = ref(false)
+
+// 仅登录用户面对他人的在售物品时可发起换物。
+const canExchange = computed(() =>
+  !!product.value &&
+  userStore.isLoggedIn &&
+  product.value.status === 'on_sale' &&
+  product.value.seller_id !== userStore.user?.id
+)
 
 onMounted(load)
 
@@ -110,6 +124,11 @@ function buyNow() {
 function contactSeller() {
   if (!requireLogin()) return
   router.push({ path: '/messages', query: { peer_id: product.value.seller_id, product_id: product.value.id } })
+}
+
+function startExchange() {
+  if (!requireLogin()) return
+  router.push({ path: '/exchange/create', query: { target_product_id: product.value.id } })
 }
 </script>
 

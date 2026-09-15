@@ -16,6 +16,7 @@ type ProductRepository interface {
 	List(query map[string]interface{}, sortBy string, page, pageSize int) ([]model.Product, int64, error)
 	ListBySeller(sellerID uint, page, pageSize int) ([]model.Product, int64, error)
 	ListByIDs(ids []uint) ([]model.Product, error)
+	ListByIDsForUpdate(tx *gorm.DB, ids []uint) ([]model.Product, error)
 	Update(product *model.Product) error
 	IncrViewCount(id uint) error
 	IncrFavoriteCount(tx *gorm.DB, id uint, delta int) error
@@ -146,6 +147,18 @@ func (r *productRepo) ListByIDs(ids []uint) ([]model.Product, error) {
 	var products []model.Product
 	if err := r.db.Where("id IN ?", ids).Find(&products).Error; err != nil {
 		return nil, fmt.Errorf("list products by ids: %w", err)
+	}
+	return products, nil
+}
+
+// ListByIDsForUpdate 在事务内按 id 升序对给定物品加 FOR UPDATE 行锁（换物提案多物品事务防死锁）。
+func (r *productRepo) ListByIDsForUpdate(tx *gorm.DB, ids []uint) ([]model.Product, error) {
+	if len(ids) == 0 {
+		return []model.Product{}, nil
+	}
+	var products []model.Product
+	if err := tx.Clauses(clauseLocking()).Where("id IN ?", ids).Order("id ASC").Find(&products).Error; err != nil {
+		return nil, fmt.Errorf("list products by ids for update: %w", err)
 	}
 	return products, nil
 }
